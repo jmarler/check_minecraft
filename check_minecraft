@@ -1,0 +1,326 @@
+#!/usr/bin/perl
+#
+# check_minecraft - Nagios plugin to check the status of a minecraft server
+#
+# Jon Marler <jmarler@debain.org> - 2013
+#
+# v1.0 - Initial release - Dec 2013
+#
+# nagios: -epn
+
+use strict;
+use warnings;
+
+use IO::Socket;
+use Pod::Usage;
+use Getopt::Long  qw(GetOptions);
+use Encode        qw(decode encode);
+use Time::HiRes   qw(gettimeofday tv_interval);
+use LWP::Simple;
+use JSON          qw(decode_json);
+use Try::Tiny;
+
+my $target    = '';
+my $port      = 25565;
+my $mcversion = '';
+my $man       = 0;
+my $help      = 0;
+my $errors    = 0;
+
+if (!@ARGV) {
+    pod2usage(-verbose => 1, -message => "$0: no arguments specified\n")
+}
+
+GetOptions ('H=s{1,1}' => \$target, 'V=i{1,1}' => \$mcversion, 'P:25565' => \$port, 'help|?' => \$help, man => \$man) or pod2usage(-verbose => 0, -exitval => 2);
+pod2usage(2) if $help;
+pod2usage(-exitval => 2, -verbose => 2) if $man;
+
+if (!$target) {
+    pod2usage(-verbose => 2, -message => "$0: host not specified\n")
+}
+
+if (!$mcversion) {
+    pod2usage(-verbose => 2, -message => "$0: version not specified\n")
+}
+
+SWITCH:
+for ($mcversion) {
+	if (/15/) { 
+		try {
+		    ping_16_server($target, $port); 
+		    last SWITCH; 
+		    }
+		catch {
+		    my $ex = shift;
+		    print "ERROR CHECKING MINECRAFT - $ex";
+		    exit(2);
+		}
+	}
+	if (/16/) { 
+		try {
+		    ping_16_server($target, $port); 
+		    last SWITCH; 
+		    }
+		catch {
+		    my $ex = shift;
+		    print "ERROR CHECKING MINECRAFT - $ex";
+		    exit(2);
+		}
+	}
+	if (/17/) { 
+		try {
+		    ping_17_server($target, $port); 
+		    last SWITCH; 
+		    }
+		catch {
+		    my $ex = shift;
+		    print "ERROR CHECKING MINECRAFT - $ex";
+		    exit(2);
+		}
+	}
+	pod2usage(-exitval => 2, -verbose => 0, -message => "$0: invalid minecraft version specified\n")
+}
+
+exit 0;
+
+sub ping_16_server {
+    my($host, $port) = @_;
+
+    my $t0 = [gettimeofday];
+    my $s = IO::Socket->new(
+        Domain   => AF_INET,
+        PeerAddr => $host,
+        PeerPort => $port,
+        Proto    => 'tcp',
+    ) || die "Unable to connect to $host - $!\n";
+
+    $s->autoflush(1);
+
+    # Packet identifier for a server list ping
+    print $s "\xFE";
+
+    # Server list ping's payload (always 1)
+    print $s "\x01";
+
+    # Packet identifier for a plugin message
+    print $s "\xFA";
+
+    # Length of ping string (packed in binary as a short - always 11)
+    print $s "\x00\x0b";
+
+    # The string MC|PingHost encoded as a UTF-16BE string
+    print $s "\x00\x4D\x00\x43\x00\x7C\x00\x50\x00\x69\x00\x6E\x00\x67\x00\x48\x00\x6F\x00\x73\x00\x74";
+
+    # Length of remaining data as a short
+    my $remaining = ( 7 + 2*length($host));
+    my $remainpacked = pack 'n', $remaining;
+    print $s $remainpacked;
+
+    # Protocol Version
+    my $protocolversion = pack 'c', 74;
+    print $s $protocolversion;
+
+    # Length of hostname
+    my $hostnamelength = pack 'n', length($host);
+    print $s $hostnamelength;
+
+    # Hostname
+    my $encodedhost = encode("utf-16be", $host);
+    print $s $encodedhost;
+
+    # Port
+    my $packedport = pack 's', $port;
+    print $s $packedport;
+
+    sysread($s, my $resp, 256);
+    my $elapsed = tv_interval($t0);
+
+    die "Malformed response after connect" unless $resp =~ /^\xFF/;
+
+    substr($resp, 0, 3, '');
+
+    $resp = decode('UCS-2', $resp);
+
+    my $header      = "";
+    my $protocol    = "";
+    my $mcversion   = "";
+    my $motd        = "";
+    my $players     = 0;
+    my $max_players = 0;
+
+    ($header, $protocol, $mcversion, $motd, $players, $max_players) = split /\x{00}/, $resp;
+
+    # If max_players does not have a valid value, server is down, or invalid response was received
+    if ($max_players < 1) { print "MINECRAFT SERVER DOWN|"; printf "%5.3fs\n", $elapsed; exit(2); }
+
+    # If server is full, exit with warning level
+    if ($players eq $max_players) { print "MINECRAFT SERVER FULL - " . $players . "/" . $max_players . " online|"; printf "%5.3fs\n", $elapsed; exit(1); }
+
+    # If server is not full, exit with good value
+    if ($players < $max_players) { print "MINECRAFT SERVER READY - " . $players . "/" . $max_players . " online|"; printf "%5.3fs\n", $elapsed; exit(0); }
+ 
+    print "Error checking server";  
+    exit(2);
+}
+
+sub ping_17_server {
+    my($host, $port) = @_;
+
+    my $t0 = [gettimeofday];
+    my $s = IO::Socket->new(
+        Domain   => AF_INET,
+        PeerAddr => $host,
+        PeerPort => $port,
+        Proto    => 'tcp',
+    ) || die "Unable to connect to $host - $!";
+
+    $s->autoflush(1);
+
+    # Packet identifier for a handshake packet
+    my $packeta = "\x00";
+
+    # Protocol Version
+    $packeta .= "\x04";
+
+    # Length of hostname
+    my $hostnamelength = pack 'c', length($host);
+    $packeta .= $hostnamelength;
+
+    # Hostname
+    $packeta .= $host;
+
+    # Port
+    my $packedport = pack 'n', $port;
+    $packeta .= $packedport;
+
+    # Next state (1 for status)
+    $packeta .= "\x01";
+    my $packetalen = pack 'c' , length($packeta);
+    print $s $packetalen;
+    print $s $packeta;
+    my $fullpacketa = $packetalen . $packeta;
+
+    # Status request packet
+    my $packetb = "\x01\x00";
+    print $s $packetb;
+
+    sysread($s, my $resp, 4096);
+
+    my $elapsed = tv_interval($t0);
+
+    # Clean the response
+    $resp =~ s/^[^{]*{/{/;
+    $resp =~ s/\xc2|\xa7.//g;
+    $resp =~ s/[^ -~]//g;
+
+    # Decode the json
+    my $decoded_resp = decode_json($resp);
+
+    # Find the bits
+    my $protocol = $decoded_resp->{'version'}{'protocol'};
+    my $version  = $decoded_resp->{'version'}{'name'};
+    my $motd     = $decoded_resp->{'description'};
+    my $players  = $decoded_resp->{'players'}{'online'};
+    my $max_players  = $decoded_resp->{'players'}{'max'};
+
+    # If max_players does not have a valid value, server is down, or invalid response was received
+    if ($max_players < 1) { print "MINECRAFT SERVER DOWN|"; printf "%5.3fs\n", $elapsed; exit(2); }
+
+    # If server is full, exit with warning level
+    if ($players eq $max_players) { print "MINECRAFT SERVER FULL - " . $players . "/" . $max_players . " online|"; printf "%5.3fs\n", $elapsed; exit(1); }
+
+    # If server is not full, exit with good value
+    if ($players < $max_players) { print "MINECRAFT SERVER READY - " . $players . "/" . $max_players . " online|"; printf "%5.3fs\n", $elapsed; exit(0); }
+ 
+    print "Error checking server";  
+    exit(2);
+
+}
+
+__END__
+
+=head1 NAME
+
+check_minecraft - Nagios plugin to check the status of a minecraft server
+
+=head1 SYNOPSIS
+
+  check_minecraft -H [hostname/ip] -V [minecraft_version] -P [port] -?/--help
+
+  Options:
+
+   -?     more detailed help message
+   -V     Version of the minecraft server to be checked [required]
+          15 - Minecraft version 1.5.x
+          16 - Minecraft version 1.6.x
+          17 - Minecraft version 1.7.x
+   -P     TCP port to connect to the server. Defaults to 25565 [optional]
+   -H     Hostname or IP of the minecraft server [required]
+
+=head1 DESCRIPTION
+
+Attempts to connect to a minecraft server on the specified host:port.  After
+connecting, a server ping packet that corresponds to the version of Minecraft
+specified is created and sent to the server.  If the server responds, the 
+response is decoded to determine the number of players online, the max number
+of players, and time taken to complete the process.
+
+If the :port is not specified, the default port number of 25565 will be used.
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-?>
+
+Display this documentation.
+
+=item B<-V>
+
+Version of the minecraft server to be checked [required]
+
+=over 4
+
+15 - Minecraft version 1.5.x  
+
+16 - Minecraft version 1.6.x
+
+17 - Minecraft version 1.7.x
+
+=back
+
+=item B<-P>
+TCP port to connect to the server. Defaults to 25565 [optional]
+
+=item B<-H>
+
+Hostname or IP of the minecraft server [required]
+
+=back
+
+=head1 AUTHOR & COPYRIGHT
+
+This script was written by Jon Marler <jmarler@debian.org> and uses some code
+by Grant McLean ( grant@mclean.net.nz )  Minecraft client/server protocol 
+reference at http://wiki.vg/Server_List_Ping used to understand proper packet
+construction and response decoding.
+
+This script may be freely used, copied and distributed under the terms of the WTFPL
+at http://www.wtfpl.net which is included below
+
+               LICENCE PUBLIQUE RIEN À BRANLER
+                     Version 1, Mars 2009
+
+Copyright (C) 2009 Sam Hocevar
+ 14 rue de Plaisance, 75014 Paris, France
+
+La copie et la distribution de copies exactes de cette licence sont
+autorisées, et toute modification est permise à condition de changer
+le nom de la licence.
+
+        CONDITIONS DE COPIE, DISTRIBUTON ET MODIFICATION
+              DE LA LICENCE PUBLIQUE RIEN À BRANLER
+
+ 0. Faites ce que vous voulez, j’en ai RIEN À BRANLER.
+
+=cut
