@@ -72,3 +72,4 @@ Nagios configuration examples
     }
 
 
+[![githalytics.com alpha](https://cruel-carlota.pagodabox.com/7aa55662aabbe027cc62f89b177aa27c "githalytics.com")](http://githalytics.com/jmarler/check_minecraft)
