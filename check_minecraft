@@ -26,6 +26,7 @@ my $mcversion = '';
 my $man       = 0;
 my $help      = 0;
 my $errors    = 0;
+$| = 1;
 
 if (!@ARGV) {
     pod2usage(-verbose => 1, -message => "$0: no arguments specified\n")
@@ -203,8 +204,17 @@ sub ping_17_server {
     # Status request packet
     my $packetb = "\x01\x00";
     print $s $packetb;
+    $s->flush();
 
-    sysread($s, my $resp, 4096);
+    my $buff = " ";
+    my $resp = "";
+
+    while (length($buff)>0) {
+	$buff="";
+        $s->recv($buff,1024);
+        $resp .= $buff;
+	if ($buff =~ /\}$/) { $buff=""; }
+    }
 
     my $elapsed = tv_interval($t0);
 
