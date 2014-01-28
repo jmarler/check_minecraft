@@ -219,7 +219,7 @@ sub ping_17_server {
     my $elapsed = tv_interval($t0);
 
     # Clean the response
-    $resp =~ s/^[^{]*{/{/;
+    $resp =~ s/^[^{}]*{/{/;
     $resp =~ s/\xc2|\xa7.//g;
     $resp =~ s/[^ -~]//g;
 
