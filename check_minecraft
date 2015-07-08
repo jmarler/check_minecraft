@@ -2,7 +2,7 @@
 #
 # check_minecraft - Nagios plugin to check the status of a minecraft server
 #
-# Jon Marler <jmarler@debain.org> - 2013
+# Jon Marler <jmarler@debian.org> - 2013
 #
 # v1.0 - Initial release - Dec 2013
 # v1.1 - Added code to process large 1.7 responses including PNG images
